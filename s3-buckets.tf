@@ -11,7 +11,7 @@ resource "aws_s3_bucket" "public_data" {
 # CRITICAL: Public read ACL — anyone on internet can read
 resource "aws_s3_bucket_acl" "public_data_acl" {
   bucket = aws_s3_bucket.public_data.id
-  acl    = "public-read"
+  acl    = "private"
 }
 
 # VULN: No versioning enabled — no recovery from accidental delete
@@ -37,7 +37,7 @@ resource "aws_s3_bucket" "logs_bucket" {
 # CRITICAL: Log bucket also public-read
 resource "aws_s3_bucket_acl" "logs_acl" {
   bucket = aws_s3_bucket.logs_bucket.id
-  acl    = "public-read"
+  acl    = "private"
 }
 
 
@@ -51,7 +51,7 @@ resource "aws_s3_bucket" "uploads" {
 # CRITICAL: Sensitive uploads bucket publicly readable
 resource "aws_s3_bucket_acl" "uploads_acl" {
   bucket = aws_s3_bucket.uploads.id
-  acl    = "public-read-write"
+  acl    = "private"
 }
 
 # VULN: No lifecycle policy — logs grow forever, cost explosion
