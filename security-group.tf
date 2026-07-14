@@ -1,43 +1,44 @@
-ia Test Repo - security-group.tf
-# INTENTIONALLY VULNERABLE
+# Gravia Test Repo - security-group.tf (SECURE)
+# All security groups now restrict inbound to necessary ports and trusted IPs.
 
-# VULN: Wide open security group — allows ALL inbound traffic
-resource "aws_security_group" "web" {
-  name        = "web-sg"
-  description = "Web server security group"
-  vpc_id      = aws_vpc.main.id
-
-  # CRITICAL: 0.0.0.0/0 on all ports
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # CRITICAL: All outbound open
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {}
+variable "trusted_admin_cidr" {
+  description = "CIDR block for admin access (SSH, RDP, etc.)"
+  type        = string
+  default     = "192.168.0.0/16"   # Example – change to your corporate network
 }
 
-# VULN: SSH open to the entire internet
-resource "aws_security_group" "ssh" {
-  name        = "ssh-access"
-  description = "SSH access"
+variable "web_allowed_cidr" {
+  description = "CIDR block for HTTP/HTTPS"
+  type        = string
+  default     = "0.0.0.0/0"   # Acceptable for public web
+}
+
+# Web security group – only HTTP/HTTPS
+resource "aws_security_group" "web" {
+  name        = "web-sg"
+  description = "Web server security group – allows HTTP/HTTPS from anywhere, SSH from trusted"
   vpc_id      = aws_vpc.main.id
 
-  # CRITICAL: SSH (22) open to 0.0.0.0/0
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [var.web_allowed_cidr]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.web_allowed_cidr]
+  }
+
+  # SSH only from trusted CIDR
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.trusted_admin_cidr]
   }
 
   egress {
@@ -47,21 +48,47 @@ resource "aws_security_group" "ssh" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: RDP (3389) open to internet — Windows remote desktop
-resource "aws_security_group" "rdp" {
-  name        = "rdp-access"
-  description = "RDP access for Windows servers"
+# SSH – dedicated SG, but we can reuse the web SG for SSH as above; we keep for clarity.
+resource "aws_security_group" "ssh" {
+  name        = "ssh-access"
+  description = "SSH access – restricted"
   vpc_id      = aws_vpc.main.id
 
-  # CRITICAL: RDP port 3389 open to 0.0.0.0/0
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.trusted_admin_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+# RDP – only from trusted
+resource "aws_security_group" "rdp" {
+  name        = "rdp-access"
+  description = "RDP access for Windows servers – restricted"
+  vpc_id      = aws_vpc.main.id
+
   ingress {
     from_port   = 3389
     to_port     = 3389
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.trusted_admin_cidr]
   }
 
   egress {
@@ -71,22 +98,22 @@ resource "aws_security_group" "rdp" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# ===== NEW INTENTIONAL VULNERABILITIES ADDED BELOW =====
-
-# VULN: MySQL (3306) exposed to the whole internet
+# MySQL – only from application security groups, not from internet
 resource "aws_security_group" "mysql" {
-  name        = "mysql-open"
-  description = "MySQL database open to world"
+  name        = "mysql-secure"
+  description = "MySQL database – accessible only from app tier"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: MySQL world-accessible
+    security_groups = [aws_security_group.web.id]   # Only web SG can connect
   }
 
   egress {
@@ -96,20 +123,22 @@ resource "aws_security_group" "mysql" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: PostgreSQL (5432) exposed to the internet
+# PostgreSQL – only from app tier
 resource "aws_security_group" "postgres" {
-  name        = "postgres-open"
-  description = "PostgreSQL open to world"
+  name        = "postgres-secure"
+  description = "PostgreSQL – accessible only from app tier"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: PostgreSQL world-accessible
+    security_groups = [aws_security_group.web.id]
   }
 
   egress {
@@ -119,20 +148,22 @@ resource "aws_security_group" "postgres" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: Redis (6379) without authentication, exposed to everyone
+# Redis – only from app tier
 resource "aws_security_group" "redis" {
-  name        = "redis-open"
-  description = "Redis open to world"
+  name        = "redis-secure"
+  description = "Redis – only app tier"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 6379
     to_port     = 6379
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: Redis world-accessible
+    security_groups = [aws_security_group.web.id]
   }
 
   egress {
@@ -142,27 +173,29 @@ resource "aws_security_group" "redis" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: Elasticsearch (9200) open to internet
+# Elasticsearch – only from app tier
 resource "aws_security_group" "elasticsearch" {
-  name        = "elasticsearch-open"
-  description = "Elasticsearch open to world"
+  name        = "elasticsearch-secure"
+  description = "Elasticsearch – app tier only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 9200
     to_port     = 9200
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: Elasticsearch world-accessible
+    security_groups = [aws_security_group.web.id]
   }
 
   ingress {
     from_port   = 9300
     to_port     = 9300
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: transport port also open
+    security_groups = [aws_security_group.web.id]
   }
 
   egress {
@@ -172,21 +205,32 @@ resource "aws_security_group" "elasticsearch" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: All traffic allowed over IPv6 (::/0) – often overlooked
+# IPv6 – we don't open all; we restrict similarly
 resource "aws_security_group" "all_ipv6" {
-  name        = "all-ipv6-open"
-  description = "All traffic allowed from any IPv6 address"
+  name        = "ipv6-restricted"
+  description = "IPv6 only for necessary ports"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    ipv6_cidr_blocks = ["::/0"]  # CRITICAL: IPv6 open to world
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]   # Public web IPv6
   }
+
+  ingress {
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  # No wide-open for IPv6 – we restrict admin ports to specific ranges if needed
 
   egress {
     from_port        = 0
@@ -195,20 +239,22 @@ resource "aws_security_group" "all_ipv6" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# VULN: Sensitive admin port (8080) open to the internet, no restriction
+# Admin panel – only from trusted CIDR
 resource "aws_security_group" "admin_panel" {
-  name        = "admin-panel-open"
-  description = "Admin panel exposed"
+  name        = "admin-panel-secure"
+  description = "Admin panel – restricted access"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: Admin interface open to anyone
+    cidr_blocks = [var.trusted_admin_cidr]
   }
 
   egress {
@@ -218,5 +264,7 @@ resource "aws_security_group" "admin_panel" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
