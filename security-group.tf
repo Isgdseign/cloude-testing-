@@ -1,4 +1,4 @@
-# Gravia Test Repo - security-group.tf
+ia Test Repo - security-group.tf
 # INTENTIONALLY VULNERABLE
 
 # VULN: Wide open security group — allows ALL inbound traffic
