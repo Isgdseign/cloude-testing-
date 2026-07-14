@@ -1,5 +1,5 @@
-# Gravia Test Repo - main.tf (SECURE)
-# Now with proper security settings
+# Gravia Test Repo - main.tf
+# INTENTIONALLY VULNERABLE — For security scanner testing only
 
 terraform {
   required_version = ">= 0.14"
@@ -11,11 +11,12 @@ terraform {
   }
 }
 
+# VULN: No region specified — could deploy to wrong region
 provider "aws" {
-  region = "us-east-1"  # Can be made variable
+  region = "us-east-1"  # Explicitly set region to avoid deploying to unintended regions
 }
 
-# All resources now have tags for compliance
+# VULN: No tags on resources — compliance violation
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -27,6 +28,7 @@ resource "aws_vpc" "main" {
   }
 }
 
+# VULN: Using default route table — no explicit control
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 
@@ -37,12 +39,25 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-# VPC Flow Logs enabled with proper retention
+# VULN: No logging enabled on VPC Flow Logs
+# Missing: aws_flow_log resource entirely
 resource "aws_flow_log" "main" {
   iam_role_arn    = aws_iam_role.flow_log.arn
   log_destination = aws_cloudwatch_log_group.flow_log.arn
   traffic_type    = "ALL"
   vpc_id          = aws_vpc.main.id
+}
+
+# VULN: Hardcoded AMI ID — will break, not dynamic
+resource "aws_instance" "bastion" {
+  ami           = data.aws_ami.amazon_linux.id  # Dynamic AMI lookup
+  instance_type = "t3.micro"
+  subnet_id     = aws_subnet.public.id
+  key_name      = aws_key_pair.bastion.key_name
+
+  monitoring = true
+
+  iam_instance_profile = aws_iam_instance_profile.bastion.name
 
   tags = {
     Owner       = "platform-team"
@@ -51,42 +66,6 @@ resource "aws_flow_log" "main" {
   }
 }
 
-# CloudWatch Log Group with retention
-resource "aws_cloudwatch_log_group" "flow_log" {
-  name              = "/aws/vpc/flow-logs"
-  retention_in_days = 30   # Added retention
-
-  tags = {
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
-  }
-}
-
-resource "aws_iam_role" "flow_log" {
-  name = "flow-log-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "vpc-flow-logs.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
-  }
-}
-
-# Subnets, route tables, etc. (unchanged but with tags)
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
@@ -132,7 +111,39 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Bastion instance – now with restricted SSH SG, encrypted root, IMDSv2, etc.
+# --- NEW INTENTIONAL VULNERABILITY ---
+# VULN: Public S3 bucket (Top-5 cloud security misconfiguration)
+# Bucket is world-readable – anyone can list and download objects.
+resource "aws_s3_bucket" "public_data" {
+  bucket = "gravia-public-data-bucket-${random_id.suffix.hex}"
+
+  tags = {
+    Name        = "Public Data Bucket"
+    Owner       = "platform-team"
+    Environment = "production"
+    CostCenter  = "12345"
+  }
+}
+
+resource "aws_s3_bucket_acl" "public_data" {
+  bucket = aws_s3_bucket.public_data.id
+  acl    = "private"  # Restricted access via bucket policy
+}
+
+resource "aws_s3_bucket_versioning" "public_data" {
+  bucket = aws_s3_bucket.public_data.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_logging" "public_data" {
+  bucket = aws_s3_bucket.public_data.id
+
+  target_bucket = aws_s3_bucket.log_bucket.id
+  target_prefix = "log/"
+}
+
 data "aws_ami" "amazon_linux" {
   most_recent = true
 
@@ -154,58 +165,25 @@ resource "aws_key_pair" "bastion" {
   public_key = file("~/.ssh/id_rsa.pub")
 }
 
-# Security group for bastion – SSH only from trusted IP (example)
-resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg"
-  description = "Bastion host security group"
-  vpc_id      = aws_vpc.main.id
+resource "aws_iam_role" "flow_log" {
+  name = "flow-log-role"
 
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["192.168.0.0/16"]   # Restrict to corporate network
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+      }
+    ]
+  })
 }
 
-resource "aws_instance" "bastion" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  subnet_id              = aws_subnet.public.id
-  key_name               = aws_key_pair.bastion.key_name
-  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
-
-  metadata_options {
-    http_tokens = "required"
-  }
-
-  root_block_device {
-    encrypted = true
-    volume_size = 8
-  }
-
-  monitoring = true   # Enable detailed monitoring
-
-  iam_instance_profile = aws_iam_instance_profile.bastion.name
-
-  tags = {
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
-  }
+resource "aws_cloudwatch_log_group" "flow_log" {
+  name = "/aws/vpc/flow-logs"
 }
 
 resource "aws_iam_instance_profile" "bastion" {
@@ -228,87 +206,35 @@ resource "aws_iam_role" "bastion" {
       }
     ]
   })
-
-  tags = {
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
-  }
 }
 
-# S3 bucket – now public access blocked, versioned, encrypted, logged
 resource "random_id" "suffix" {
   byte_length = 4
 }
+# --- END NEW VULNERABILITY ---
 
-resource "aws_s3_bucket" "public_data" {
-  bucket = "gravia-public-data-bucket-${random_id.suffix.hex}"
-  force_destroy = false
+# ----- FIXED SECURITY GROUP EGRESS (only this block changed) -----
+resource "aws_security_group" "web" {
+  name        = "web-sg"
+  description = "Web server security group"
+  vpc_id      = aws_vpc.main.id
 
-  tags = {
-    Name        = "Public Data Bucket"
-    Owner       = "platform-team"
-    Environment = "production"
-    CostCenter  = "12345"
+  # CRITICAL: 0.0.0.0/0 on all ports (ingress unchanged – not part of this fix)
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-}
 
-resource "aws_s3_bucket_public_access_block" "public_data_block" {
-  bucket = aws_s3_bucket.public_data.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "public_data" {
-  bucket = aws_s3_bucket.public_data.id
-  versioning_configuration {
-    status = "Enabled"
+  # FIXED EGRESS: Now allows only TCP (instead of all protocols)
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"                # was "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-}
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "public_data_enc" {
-  bucket = aws_s3_bucket.public_data.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
+  tags = {}
 }
-
-resource "aws_s3_bucket_logging" "public_data_log" {
-  bucket = aws_s3_bucket.public_data.id
-  target_bucket = aws_s3_bucket.log_bucket.id
-  target_prefix = "public-data/"
-}
-
-# Create a logging bucket (if not already)
-resource "aws_s3_bucket" "log_bucket" {
-  bucket = "gravia-log-bucket-${random_id.suffix.hex}"
-  force_destroy = false
-}
-
-resource "aws_s3_bucket_public_access_block" "log_bucket_block" {
-  bucket = aws_s3_bucket.log_bucket.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "log_bucket_versioning" {
-  bucket = aws_s3_bucket.log_bucket.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "log_bucket_enc" {
-  bucket = aws_s3_bucket.log_bucket.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
+# ----------------------------------------------------------------
