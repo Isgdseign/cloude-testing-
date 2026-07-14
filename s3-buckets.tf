@@ -1,58 +1,139 @@
-# Gravia Test Repo - s3-buckets.tf
-# INTENTIONALLY VULNERABLE
+# Gravia Test Repo - s3-buckets.tf (SECURE)
+# All buckets are private, encrypted, versioned, and logged.
 
-# VULN: S3 bucket with PUBLIC read access
+# Main data bucket
 resource "aws_s3_bucket" "public_data" {
-  bucket = "gravia-test-public-data-bucket"
+  bucket = "gravia-secure-data-bucket"
+  force_destroy = false
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# CRITICAL: Public read ACL — anyone on internet can read
-resource "aws_s3_bucket_acl" "public_data_acl" {
+resource "aws_s3_bucket_public_access_block" "public_data_block" {
   bucket = aws_s3_bucket.public_data.id
-  acl    = "private"
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
-# VULN: No versioning enabled — no recovery from accidental delete
-# Missing: aws_s3_bucket_versioning
+resource "aws_s3_bucket_versioning" "public_data_ver" {
+  bucket = aws_s3_bucket.public_data.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
 
-# VULN: No encryption at rest
-# Missing: aws_s3_bucket_server_side_encryption_configuration
+resource "aws_s3_bucket_server_side_encryption_configuration" "public_data_enc" {
+  bucket = aws_s3_bucket.public_data.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
 
-# VULN: No logging
-# Missing: aws_s3_bucket_logging
+resource "aws_s3_bucket_logging" "public_data_log" {
+  bucket = aws_s3_bucket.public_data.id
+  target_bucket = aws_s3_bucket.logs_bucket.id
+  target_prefix = "data-access-logs/"
+}
 
-# VULN: No bucket policy restricting access
-# Missing: aws_s3_bucket_policy with ip restriction
-
-
-# VULN: Another bucket — also no encryption
+# Logs bucket
 resource "aws_s3_bucket" "logs_bucket" {
-  bucket = "gravia-test-logs-bucket-2024"
+  bucket = "gravia-secure-logs-bucket-2024"
+  force_destroy = false
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# CRITICAL: Log bucket also public-read
-resource "aws_s3_bucket_acl" "logs_acl" {
+resource "aws_s3_bucket_public_access_block" "logs_bucket_block" {
   bucket = aws_s3_bucket.logs_bucket.id
-  acl    = "private"
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_versioning" "logs_bucket_ver" {
+  bucket = aws_s3_bucket.logs_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
 
-# VULN: S3 bucket for sensitive uploads — still public
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs_bucket_enc" {
+  bucket = aws_s3_bucket.logs_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Uploads bucket (sensitive)
 resource "aws_s3_bucket" "uploads" {
-  bucket = "gravia-test-uploads-sensitive"
+  bucket = "gravia-secure-uploads-sensitive"
+  force_destroy = false
 
-  tags = {}
+  tags = {
+    Environment = "production"
+  }
 }
 
-# CRITICAL: Sensitive uploads bucket publicly readable
-resource "aws_s3_bucket_acl" "uploads_acl" {
+resource "aws_s3_bucket_public_access_block" "uploads_block" {
   bucket = aws_s3_bucket.uploads.id
-  acl    = "private"
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
-# VULN: No lifecycle policy — logs grow forever, cost explosion
-# Missing: aws_s3_bucket_lifecycle_configuration
+resource "aws_s3_bucket_versioning" "uploads_ver" {
+  bucket = aws_s3_bucket.uploads.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "uploads_enc" {
+  bucket = aws_s3_bucket.uploads.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_logging" "uploads_log" {
+  bucket = aws_s3_bucket.uploads.id
+  target_bucket = aws_s3_bucket.logs_bucket.id
+  target_prefix = "uploads-access-logs/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "uploads_lifecycle" {
+  bucket = aws_s3_bucket.uploads.id
+
+  rule {
+    id     = "archive-old-files"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
+}
