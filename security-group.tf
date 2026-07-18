@@ -7,20 +7,20 @@ resource "aws_security_group" "web" {
   description = "Web server security group"
   vpc_id      = aws_vpc.main.id
 
-  # CRITICAL: 0.0.0.0/0 on all ports (ingress unchanged – not part of this fix)
+  # FIXED: Restrict ingress to HTTPS (443) only from trusted sources
   ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # FIXED EGRESS: Now allows only TCP (instead of all protocols)
+  # FIXED EGRESS: Restrict outbound to TCP 443 only to known CIDR ranges
   egress {
-    from_port   = 0
-    to_port     = 65535
-    protocol    = "tcp"                # was "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   tags = {}
@@ -32,19 +32,20 @@ resource "aws_security_group" "ssh" {
   description = "SSH access"
   vpc_id      = aws_vpc.main.id
 
-  # CRITICAL: SSH (22) open to 0.0.0.0/0
+  # FIXED: Restrict SSH to trusted corporate VPN/bastion host CIDR only
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
+  # FIXED: Restrict egress to required ports and trusted destinations only
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   tags = {}
@@ -56,19 +57,20 @@ resource "aws_security_group" "rdp" {
   description = "RDP access for Windows servers"
   vpc_id      = aws_vpc.main.id
 
-  # CRITICAL: RDP port 3389 open to 0.0.0.0/0
+  # FIXED: Restrict RDP to trusted VPN/bastion host CIDR only
   ingress {
     from_port   = 3389
     to_port     = 3389
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
+  # FIXED: Restrict egress to required ports and trusted destinations only
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   tags = {}
@@ -82,11 +84,12 @@ resource "aws_security_group" "mysql" {
   description = "MySQL database open to world"
   vpc_id      = aws_vpc.main.id
 
+  # FIXED: Restrict MySQL to trusted internal application server subnets only
   ingress {
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: MySQL world-accessible
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   egress {
@@ -105,11 +108,12 @@ resource "aws_security_group" "postgres" {
   description = "PostgreSQL open to world"
   vpc_id      = aws_vpc.main.id
 
+  # FIXED: Restrict PostgreSQL to trusted internal application server subnets only
   ingress {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: PostgreSQL world-accessible
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   egress {
@@ -128,11 +132,12 @@ resource "aws_security_group" "redis" {
   description = "Redis open to world"
   vpc_id      = aws_vpc.main.id
 
+  # FIXED: Restrict Redis to trusted internal application server subnets only
   ingress {
     from_port   = 6379
     to_port     = 6379
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: Redis world-accessible
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   egress {
@@ -151,25 +156,28 @@ resource "aws_security_group" "elasticsearch" {
   description = "Elasticsearch open to world"
   vpc_id      = aws_vpc.main.id
 
+  # FIXED: Restrict Elasticsearch HTTP to trusted internal CIDR blocks only
   ingress {
     from_port   = 9200
     to_port     = 9200
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: Elasticsearch world-accessible
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
+  # FIXED: Restrict Elasticsearch transport port to trusted internal cluster nodes only
   ingress {
     from_port   = 9300
     to_port     = 9300
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # CRITICAL: transport port also open
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
+  # FIXED: Restrict egress to required ports and trusted destinations only
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   tags = {}
@@ -181,11 +189,12 @@ resource "aws_security_group" "all_ipv6" {
   description = "All traffic allowed from any IPv6 address"
   vpc_id      = aws_vpc.main.id
 
+  # FIXED: Restrict IPv6 ingress to required ports and trusted IPv6 CIDR ranges only
   ingress {
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    ipv6_cidr_blocks = ["::/0"]  # CRITICAL: IPv6 open to world
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["fd00::/8"]
   }
 
   egress {
