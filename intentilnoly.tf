@@ -1,272 +1,139 @@
-# -----------------------------------------------------------------------------
-# main.tf - Production AWS Infrastructure
-# Author: CloudDevOps Team
-# Description: Standard web app infrastructure with RDS, EC2, S3 and Lambda.
-# -----------------------------------------------------------------------------
+# Gravia Test Repo - s3-buckets.tf (SECURE)
+# All buckets are private, encrypted, versioned, and logged.
 
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-# V-01: Hardcoded AWS Keys (Base64 encoded to bypass basic regex scanners)
-provider "aws" {
-  region = var.aws_region
-  
-  # Use environment variables, IAM instance profiles, or AWS CLI/SSO configuration
-  # No hardcoded credentials - rotate exposed keys immediately
-}
-
-# -----------------------------------------------------------------------------
-# Variables
-# -----------------------------------------------------------------------------
-variable "aws_region" {
-  default = "ap-south-1"
-}
-
-variable "env" {
-  description = "Deployment environment"
-  default     = "staging" # Try changing to prod to see ACL changes
-}
-
-variable "root_volume_encrypted" {
-  description = "Encrypt root volume"
-  default     = true
-}
-
-variable "db_admin_password" {
-  description = "RDS admin password"
-  type        = string
-  sensitive   = true
-  # No default value - use AWS Secrets Manager, SSM Parameter Store, or CI/CD secret injection
-}
-
-# -----------------------------------------------------------------------------
-# Networking & VPC
-# -----------------------------------------------------------------------------
-resource "aws_vpc" "main_vpc" {
-  cidr_block = "10.0.0.0/16"
-}
-
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main_vpc.id
-}
-
-# V-20: Network ACL allows 0.0.0.0/0 (Looks like standard SSH/HTTP access)
-resource "aws_network_acl_rule" "allow_all_in" {
-  network_acl_id = aws_vpc.main_vpc.default_network_acl_id
-  rule_number    = 100
-  egress         = false
-  protocol       = "tcp"
-  rule_action    = "allow"
-  cidr_block     = "10.0.0.0/16"
-  from_port      = 443
-  to_port        = 443
-}
-
-# ----- FIXED NACL EGRESS (only this block changed) -----
-resource "aws_network_acl_rule" "allow_outbound_tcp" {
-  network_acl_id = aws_vpc.main_vpc.default_network_acl_id
-  rule_number    = 200
-  egress         = true
-  protocol       = "tcp"                  # was "-1"
-  rule_action    = "allow"
-  cidr_block     = "0.0.0.0/0"
-  from_port      = 0
-  to_port        = 65535                 # allows all TCP (still less permissive than -1)
-}
-# -------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# Security Groups (Looks standard, but hides dangerous dynamic rules)
-# -----------------------------------------------------------------------------
-locals {
-  # V-04 & V-05: SSH (22) and All Ports (-1) hidden in a dynamic map
-  ingress_rules = {
-    ssh_access = { port = 22, protocol = "tcp", cidr = "10.0.0.0/16" }
-  }
-}
-
-resource "aws_security_group" "web_sg" {
-  name        = "web-tier-sg"
-  description = "Allow web inbound traffic"
-  vpc_id      = aws_vpc.main_vpc.id
-
-  dynamic "ingress" {
-    for_each = local.ingress_rules
-    content {
-      from_port   = ingress.value.port
-      to_port     = ingress.value.port == 0 ? 0 : ingress.value.port
-      protocol    = ingress.value.protocol
-      cidr_blocks = [ingress.value.cidr]
-    }
-  }
-
-  # V-06: Outbound 0.0.0.0/0 all protocols (unchanged – not part of this fix)
-  egress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-}
-
-# -----------------------------------------------------------------------------
-# IAM Configuration
-# -----------------------------------------------------------------------------
-# V-07: IAM Role Trust Policy Principal = "*" (Looks like a generic cross-account role)
-resource "aws_iam_role" "app_role" {
-  name = "app_service_role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          AWS = "*" # Wildcard trust
-        }
-      }
-    ]
-  })
-}
-
-# V-08: IAM Admin access via merge function in non-prod (Bypasses simple policy scanners)
-locals {
-  base_policy = {
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = ["s3:GetObject", "s3:PutObject"]
-      Effect   = "Allow"
-      Resource = "*"
-    }]
-  }
-  
-  # Apply least privilege consistently across all environments
-  dev_extras = {}
-
-  merged_policy = merge(local.base_policy, local.dev_extras)
-}
-
-resource "aws_iam_role_policy" "app_inline" {
-  name   = "app_permissions"
-  role   = aws_iam_role.app_role.id
-  policy = jsonencode(local.merged_policy)
-}
-
-# V-09: IAM User with static access keys (No PGP key)
-resource "aws_iam_user" "ci_user" {
-  name = "ci-deploy-user"
-}
-
-resource "aws_iam_access_key" "ci_key" {
-  user    = aws_iam_user.ci_user.name
-  pgp_key = "keybase:ci_deploy_user"
-}
-
-# -----------------------------------------------------------------------------
-# S3 Storage
-# -----------------------------------------------------------------------------
-# V-02: S3 Bucket Public Read conditionally (Looks like a feature flag)
-# V-03: S3 force_destroy enabled (Looks useful for ephemeral environments)
-resource "aws_s3_bucket" "app_data" {
-  bucket = "app-data-${var.env}-2024"
+# Main data bucket
+resource "aws_s3_bucket" "public_data" {
+  bucket = "gravia-secure-data-bucket"
   force_destroy = false
-}
 
-resource "aws_s3_bucket_acl" "app_data_acl" {
-  bucket = aws_s3_bucket.app_data.id
-  acl    = "private"
-}
-
-# -----------------------------------------------------------------------------
-# Database (RDS)
-# -----------------------------------------------------------------------------
-# V-10, V-11, V-12: RDS public, unencrypted, no backups
-resource "aws_db_instance" "postgres" {
-  identifier             = "app-database"
-  engine                 = "postgres"
-  instance_class         = "db.t3.micro"
-  allocated_storage      = 20
-  username               = "dbadmin"
-  password               = var.db_admin_password
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-  
-  # Flags that look like dev conveniences but are fatal in prod
-  publicly_accessible    = true
-  storage_encrypted      = false
-  backup_retention_period = 0
-  skip_final_snapshot    = true
-}
-
-# -----------------------------------------------------------------------------
-# Compute (EC2)
-# -----------------------------------------------------------------------------
-# V-16: AMI Filter with owner "self" and most_recent
-data "aws_ami" "app_ami" {
-  most_recent = true
-  owners      = ["self", "amazon"] # Risky supply chain vector
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  tags = {
+    Environment = "production"
   }
 }
 
-# V-19: Standalone EBS Volume unencrypted
-resource "aws_ebs_volume" "data_vol" {
-  availability_zone = "${var.aws_region}a"
-  size              = 10
-  encrypted         = false
+resource "aws_s3_bucket_public_access_block" "public_data_block" {
+  bucket = aws_s3_bucket.public_data.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
-# V-13: EC2 User Data hardcoded DB password
-# V-14: EC2 IMDSv1 allowed (metadata_options missing)
-# V-15: EC2 Root Volume Unencrypted
-resource "aws_instance" "web_server" {
-  ami           = data.aws_ami.app_ami.id
-  instance_type = "t3.micro"
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-  user_data     = <<-EOF
-                  #!/bin/bash
-                  # Application setup script
-                  export DB_HOST="${aws_db_instance.postgres.address}"
-                  export DB_USER="dbadmin"
-                  export DB_PASSWORD="SuperSecret123!" # Hardcoded plaintext password
-                  echo "Starting application..."
-                  EOF
-  
-  # metadata_options block is intentionally missing, defaulting to IMDSv1
-
-  root_block_device {
-    encrypted = var.root_volume_encrypted # defaults to false
-    volume_size = 8
+resource "aws_s3_bucket_versioning" "public_data_ver" {
+  bucket = aws_s3_bucket.public_data.id
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
-# -----------------------------------------------------------------------------
-# Serverless (Lambda)
-# -----------------------------------------------------------------------------
-# V-17: Lambda Env Var Plaintext secret
-resource "aws_lambda_function" "api_processor" {
-  filename         = "lambda_payload.zip"
-  function_name    = "api_processor"
-  role             = aws_iam_role.app_role.arn
-  handler          = "index.handler"
-  runtime          = "python3.9"
-  
-  environment {
-    variables = {
-      API_ENDPOINT = "https://api.example.com"
-      API_TOKEN    = "ghp_1234567890abcdefghijklmnopqrstuvwxyz" # Plaintext secret
+resource "aws_s3_bucket_server_side_encryption_configuration" "public_data_enc" {
+  bucket = aws_s3_bucket.public_data.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
     }
   }
 }
 
-# -----------------------------------------------------------------------------
-# Note: CloudTrail is managed at the Organization level (V-18: Missing CloudTrail)
-# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_logging" "public_data_log" {
+  bucket = aws_s3_bucket.public_data.id
+  target_bucket = aws_s3_bucket.logs_bucket.id
+  target_prefix = "data-access-logs/"
+}
+
+# Logs bucket
+resource "aws_s3_bucket" "logs_bucket" {
+  bucket = "gravia-secure-logs-bucket-2024"
+  force_destroy = false
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "logs_bucket_block" {
+  bucket = aws_s3_bucket.logs_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "logs_bucket_ver" {
+  bucket = aws_s3_bucket.logs_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs_bucket_enc" {
+  bucket = aws_s3_bucket.logs_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Uploads bucket (sensitive)
+resource "aws_s3_bucket" "uploads" {
+  bucket = "gravia-secure-uploads-sensitive"
+  force_destroy = false
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "uploads_block" {
+  bucket = aws_s3_bucket.uploads.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "uploads_ver" {
+  bucket = aws_s3_bucket.uploads.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "uploads_enc" {
+  bucket = aws_s3_bucket.uploads.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_logging" "uploads_log" {
+  bucket = aws_s3_bucket.uploads.id
+  target_bucket = aws_s3_bucket.logs_bucket.id
+  target_prefix = "uploads-access-logs/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "uploads_lifecycle" {
+  bucket = aws_s3_bucket.uploads.id
+
+  rule {
+    id     = "archive-old-files"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
+}
