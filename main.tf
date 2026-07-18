@@ -48,6 +48,32 @@ resource "aws_flow_log" "main" {
   vpc_id          = aws_vpc.main.id
 }
 
+resource "aws_security_group" "bastion" {
+  name        = "bastion-sg"
+  description = "Bastion host security group - SSH only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Owner       = "platform-team"
+    Environment = "production"
+    CostCenter  = "12345"
+  }
+}
+
 # VULN: Hardcoded AMI ID — will break, not dynamic
 resource "aws_instance" "bastion" {
   ami           = data.aws_ami.amazon_linux.id  # Dynamic AMI lookup
@@ -56,6 +82,8 @@ resource "aws_instance" "bastion" {
   key_name      = aws_key_pair.bastion.key_name
 
   monitoring = true
+
+  vpc_security_group_ids = [aws_security_group.bastion.id]
 
   iam_instance_profile = aws_iam_instance_profile.bastion.name
 
@@ -69,7 +97,7 @@ resource "aws_instance" "bastion" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
   availability_zone       = "us-east-1a"
 
   tags = {
@@ -160,9 +188,14 @@ data "aws_ami" "amazon_linux" {
   owners = ["amazon"]
 }
 
+variable "bastion_public_key" {
+  type        = string
+  description = "SSH public key for the bastion host"
+}
+
 resource "aws_key_pair" "bastion" {
   key_name   = "bastion-key"
-  public_key = file("~/.ssh/id_rsa.pub")
+  public_key = var.bastion_public_key
 }
 
 resource "aws_iam_role" "flow_log" {
@@ -183,7 +216,8 @@ resource "aws_iam_role" "flow_log" {
 }
 
 resource "aws_cloudwatch_log_group" "flow_log" {
-  name = "/aws/vpc/flow-logs"
+  name            = "/aws/vpc/flow-logs"
+  retention_in_days = 90
 }
 
 resource "aws_iam_instance_profile" "bastion" {
@@ -237,4 +271,4 @@ resource "aws_security_group" "web" {
 
   tags = {}
 }
-# ----------------------------------------------------------------
+# --------------------------------
