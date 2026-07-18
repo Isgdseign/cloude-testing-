@@ -17,9 +17,8 @@ terraform {
 provider "aws" {
   region = var.aws_region
   
-  # DevOps team convenience: Encoded keys to avoid plain text in git
-  access_key = base64decode("QUPSTDQNW1BSVhBSVhBQ0NFU1M=")
-  secret_key = base64decode("czNjcjN0S2V5U2VjcmV0QmFzZTY0RW5jb2RlZA==")
+  # Use environment variables, IAM instance profiles, or AWS CLI/SSO configuration
+  # No hardcoded credentials - rotate exposed keys immediately
 }
 
 # -----------------------------------------------------------------------------
@@ -36,12 +35,14 @@ variable "env" {
 
 variable "root_volume_encrypted" {
   description = "Encrypt root volume"
-  default     = false
+  default     = true
 }
 
 variable "db_admin_password" {
   description = "RDS admin password"
-  default     = "Admin123!" # Placeholder, should be overridden
+  type        = string
+  sensitive   = true
+  # No default value - use AWS Secrets Manager, SSM Parameter Store, or CI/CD secret injection
 }
 
 # -----------------------------------------------------------------------------
@@ -60,11 +61,11 @@ resource "aws_network_acl_rule" "allow_all_in" {
   network_acl_id = aws_vpc.main_vpc.default_network_acl_id
   rule_number    = 100
   egress         = false
-  protocol       = "-1"
+  protocol       = "tcp"
   rule_action    = "allow"
-  cidr_block     = "0.0.0.0/0"
-  from_port      = 0
-  to_port        = 0
+  cidr_block     = "10.0.0.0/16"
+  from_port      = 443
+  to_port        = 443
 }
 
 # ----- FIXED NACL EGRESS (only this block changed) -----
@@ -86,8 +87,7 @@ resource "aws_network_acl_rule" "allow_outbound_tcp" {
 locals {
   # V-04 & V-05: SSH (22) and All Ports (-1) hidden in a dynamic map
   ingress_rules = {
-    ssh_access = { port = 22, protocol = "tcp", cidr = "0.0.0.0/0" }
-    internal_app = { port = 0, protocol = "-1", cidr = "0.0.0.0/0" } # Hidden all access
+    ssh_access = { port = 22, protocol = "tcp", cidr = "10.0.0.0/16" }
   }
 }
 
@@ -108,10 +108,10 @@ resource "aws_security_group" "web_sg" {
 
   # V-06: Outbound 0.0.0.0/0 all protocols (unchanged – not part of this fix)
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
   }
 }
 
@@ -146,14 +146,8 @@ locals {
     }]
   }
   
-  # Dynamic policy merge for dev/staging convenience
-  dev_extras = var.env != "prod" ? {
-    Statement = [{
-      Action   = "*"
-      Effect   = "Allow"
-      Resource = "*"
-    }]
-  } : {}
+  # Apply least privilege consistently across all environments
+  dev_extras = {}
 
   merged_policy = merge(local.base_policy, local.dev_extras)
 }
@@ -170,8 +164,8 @@ resource "aws_iam_user" "ci_user" {
 }
 
 resource "aws_iam_access_key" "ci_key" {
-  user = aws_iam_user.ci_user.name
-  # pgp_key is missing, secret will be in plaintext state file
+  user    = aws_iam_user.ci_user.name
+  pgp_key = "keybase:ci_deploy_user"
 }
 
 # -----------------------------------------------------------------------------
@@ -181,12 +175,12 @@ resource "aws_iam_access_key" "ci_key" {
 # V-03: S3 force_destroy enabled (Looks useful for ephemeral environments)
 resource "aws_s3_bucket" "app_data" {
   bucket = "app-data-${var.env}-2024"
-  force_destroy = true
+  force_destroy = false
 }
 
 resource "aws_s3_bucket_acl" "app_data_acl" {
   bucket = aws_s3_bucket.app_data.id
-  acl    = var.env != "prod" ? "public-read" : "private"
+  acl    = "private"
 }
 
 # -----------------------------------------------------------------------------
